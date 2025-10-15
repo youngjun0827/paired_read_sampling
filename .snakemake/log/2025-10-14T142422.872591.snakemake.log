@@ -1,0 +1,8 @@
+FileNotFoundErrorin line 22 of /net/eichler/vol28/home/yjkwon5/nobackups/git_works/paired_read_sampling/Snakefile:
+[Errno 2] No such file or directory: 'illumina_fofn/SMHT004_Illumina_srWGS_Colon-Asc_PS30125_R1.fofn,illumina_fofn/SMHT004_Illumina_srWGS_Colon-Asc_PS30125_R2.fofn'
+  File "/net/eichler/vol28/home/yjkwon5/nobackups/git_works/paired_read_sampling/Snakefile", line 62, in <module>
+  File "/net/eichler/vol28/7200/software/modules-sw/miniconda/4.12.0/Linux/Ubuntu22.04/x86_64/envs/python3/lib/python3.10/site-packages/pandas/core/series.py", line 4771, in apply
+  File "/net/eichler/vol28/7200/software/modules-sw/miniconda/4.12.0/Linux/Ubuntu22.04/x86_64/envs/python3/lib/python3.10/site-packages/pandas/core/apply.py", line 1105, in apply
+  File "/net/eichler/vol28/7200/software/modules-sw/miniconda/4.12.0/Linux/Ubuntu22.04/x86_64/envs/python3/lib/python3.10/site-packages/pandas/core/apply.py", line 1156, in apply_standard
+  File "pandas/_libs/lib.pyx", line 2918, in pandas._libs.lib.map_infer
+  File "/net/eichler/vol28/home/yjkwon5/nobackups/git_works/paired_read_sampling/Snakefile", line 22, in get_read_paths

@@ -1,0 +1,18 @@
+MANIFEST: config/manifest.tab
+QUALITY_THRESHOLD:
+  - 20
+READ_MIN_LENGTH:
+  ILLUMINA_PE: 15
+DS:
+  - 5
+  - 10
+  - 15
+  - 20
+  - 25
+  - 30
+  - 35
+  - 40
+  - 45
+  - 50
+DS_METHOD:
+  - random
