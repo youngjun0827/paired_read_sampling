@@ -3,6 +3,7 @@ import os
 import numpy as np
 import sys
 import re
+from collections import defaultdict
 
 configfile: "config/config.yaml"
 
@@ -68,7 +69,7 @@ def find_read_ids(which_one):
             basenames = basenames.tolist()
         else:
             basenames = [basenames]
-        read_dir = f"downsampled_reads/tmp/{wildcards.sample}/PE_{wildcards.method}_Q{wildcards.quality_threshold}_{wildcards.ds}_lists"
+        read_dir = f"downsampled_reads/tmp/{wildcards.sample}/PE_{wildcards.method}_Q{wildcards.quality_threshold}_{wildcards.ds}_{which_one}_lists"
         return [ f"{read_dir}/{wildcards.sample}.PE.{basename}.Q{wildcards.quality_threshold}.{which_one}.reads.txt" for basename in basenames]
     return inner
     
@@ -155,25 +156,24 @@ rule compress_r2:
         samtools fqidx {output.r2_trim_fastq_gz}
         """
 
-
-rule sample_reads_pe:
+rule build_pairs_index:
     input:
         trim_r1_fastq_files = find_trimmed_fastq_files(which_one="R1"),
         trim_r2_fastq_files = find_trimmed_fastq_files(which_one="R2")
     output:
-        selected_list = directory("downsampled_reads/tmp/{sample}/PE_{method}_Q{quality_threshold}_{ds}_lists"),
-        flag = "downsampled_reads/tmp/{sample}/.PE_{method}_Q{quality_threshold}_{ds}.sample_done"
+        pairs_index = "downsampled_reads/pairs_index/{sample}/PE_Q{quality_threshold}.tsv.gz",
+        flag = "downsampled_reads/pairs_index/{sample}/.PE_Q{quality_threshold}.done"
     threads: 1
     resources:
-        mem = 32,
-        hrs = 96
+        mem = 320,
+        hrs = 96,
+        heavy_io = 3,        
+    benchmark: "downsampled_reads/pairs_index/{sample}/PE_Q{quality_threshold}.benchmark.txt"
     run:
-        import os
-        os.makedirs(output.selected_list, exist_ok=True)
         def load_fai_table(fq):
             fai = fq + ".fai"
-            df = pd.read_csv(fai, sep="\t", header=None, usecols=[0,1], names=["read_name", "len"])
-            df["source"] = os.path.basename(fq)  # 파일 단위로 추출할 것이므로 basename을 key로
+            df = pd.read_csv(fai, sep="\t", header=None, usecols=[0,1], names=["read_name", "len"], dtype={"read_name":"string","len":"int32"})
+            df["source"] = pd.Categorical([os.path.basename(fq).replace(".R1.fastq.gz","").replace(".R2.fastq.gz","")]*len(df))
             return df
 
         print ("Loading fai files...")
@@ -182,10 +182,34 @@ rule sample_reads_pe:
 
         r1_df_all["end"] = "R1"
         r2_df_all["end"] = "R2"
-        key_cols = ["read_name"]
+        key_cols = ["read_name","source"]
         merged = r1_df_all.merge(r2_df_all, on=key_cols, suffixes=("_r1","_r2"))
+        del r1_df_all, r2_df_all
 
-        merged["pair_len"] = merged["len_r1"] + merged["len_r2"]
+        merged["pair_len"] = (merged["len_r1"].astype("int64") + merged["len_r2"].astype("int64"))
+        merged = merged[["read_name","source","pair_len"]]
+
+        print(f"Saving merged pairs_index to {output.pairs_index}")
+        merged.to_csv(output.pairs_index, sep="\t", index=False, compression="gzip")
+        with open(output.flag,"w") as fout:
+            fout.close()
+
+rule sample_reads_r1:
+    input:
+        pairs_index = rules.build_pairs_index.output.pairs_index,
+        flag = rules.build_pairs_index.output.flag,
+    output:
+        selected_list = directory("downsampled_reads/tmp/{sample}/PE_{method}_Q{quality_threshold}_{ds}_R1_lists"),
+        flag = "downsampled_reads/tmp/{sample}/.PE_{method}_Q{quality_threshold}_{ds}.R1.sample_done"
+    threads: 1
+    resources:
+        mem = 120,
+        hrs = 96,
+        heavy_io = 3,
+    benchmark: "downsampled_reads/tmp/{sample}/.PE_{method}_Q{quality_threshold}_{ds}.R1.benchmark.txt"
+    run:
+        os.makedirs(output.selected_list, exist_ok=True)
+        merged = pd.read_csv(input.pairs_index, sep="\t")
 
         if wildcards.method == "long":
             cov_df = merged.sort_values("pair_len", ascending=False).reset_index(drop=True)
@@ -196,23 +220,56 @@ rule sample_reads_pe:
 
         cov_csum = np.cumsum(cov_df["pair_len"])
         keep_idx = cov_csum <= exp_cov
-        out_df = cov_df.loc[keep_idx, ["read_name","source_r1","source_r2"]]
+        out_df = cov_df.loc[keep_idx, ["read_name","source"]]
 
-        for src, sub in out_df.groupby("source_r1"):
-            src_name = src.replace(".fastq.gz","")
-            lst = os.path.join(output.selected_list, f"{src_name}.reads.txt")
-            sub[["read_name"]].to_csv(lst, sep="\t", header=False, index=False)
-        for src, sub in out_df.groupby("source_r2"):
-            src_name = src.replace(".fastq.gz","")
-            lst = os.path.join(output.selected_list, f"{src_name}.reads.txt")
-            sub[["read_name"]].to_csv(lst, sep="\t", header=False, index=False)
+        grouped_by_source = {src: sub for src, sub in out_df.groupby("source", sort=False)}
+
+        for src_name, sub_df in grouped_by_source.items():
+            list_path = os.path.join(output.selected_list, f"{src_name}.R1.reads.txt")
+            sub_df[["read_name"]].to_csv(list_path, sep="\t", header=False, index=False)
+        with open(output.flag,"w") as fout:
+            fout.close()
+
+rule sample_reads_r2:
+    input:
+        pairs_index = rules.build_pairs_index.output.pairs_index,
+        flag = rules.build_pairs_index.output.flag,
+    output:
+        selected_list = directory("downsampled_reads/tmp/{sample}/PE_{method}_Q{quality_threshold}_{ds}_R2_lists"),
+        flag = "downsampled_reads/tmp/{sample}/.PE_{method}_Q{quality_threshold}_{ds}.R2.sample_done"
+    threads: 1
+    resources:
+        mem = 120,
+        hrs = 96,
+        heavy_io = 3,
+    benchmark: "downsampled_reads/tmp/{sample}/.PE_{method}_Q{quality_threshold}_{ds}.R2.benchmark.txt"
+    run:
+        os.makedirs(output.selected_list, exist_ok=True)
+        merged = pd.read_csv(input.pairs_index, sep="\t")
+
+        if wildcards.method == "long":
+            cov_df = merged.sort_values("pair_len", ascending=False).reset_index(drop=True)
+        else:  # random
+            cov_df = merged.sample(frac=1, random_state=42).reset_index(drop=True)
+
+        exp_cov = float(eval(wildcards.ds)) * float(GENOME_SIZE)
+
+        cov_csum = np.cumsum(cov_df["pair_len"])
+        keep_idx = cov_csum <= exp_cov
+        out_df = cov_df.loc[keep_idx, ["read_name","source"]]
+
+        grouped_by_source = {src: sub for src, sub in out_df.groupby("source", sort=False)}
+
+        for src_name, sub_df in grouped_by_source.items():
+            list_path = os.path.join(output.selected_list, f"{src_name}.R2.reads.txt")
+            sub_df[["read_name"]].to_csv(list_path, sep="\t", header=False, index=False)
         with open(output.flag,"w") as fout:
             fout.close()
         
 
 rule extract_reads_r1:
     input:
-        flag = rules.sample_reads_pe.output.flag
+        flag = rules.sample_reads_r1.output.flag
     output:
         reads = temp('downsampled_reads/{sample}/PE_{method}_Q{quality_threshold}_{ds}X_R1.fastq')
     params:
@@ -253,7 +310,7 @@ rule extract_reads_r1:
 
 rule extract_reads_r2:
     input:
-        flag = rules.sample_reads_pe.output.flag
+        flag = rules.sample_reads_r2.output.flag
     output:
         reads = temp('downsampled_reads/{sample}/PE_{method}_Q{quality_threshold}_{ds}X_R2.fastq')
     params:
@@ -272,7 +329,7 @@ rule extract_reads_r2:
         ## <===============================
 
         os.makedirs(f"/data/scratch/tmp/{wildcards.sample}", exist_ok=True)
-        for region in input.regions:
+        for region in params.regions:
             file_base = os.path.basename(region).replace(".reads.txt","")
             token = file_base.split(".")
             print (token)
